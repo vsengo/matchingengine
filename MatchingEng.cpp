@@ -94,8 +94,30 @@ class Book{
             (*it)->print();
         }
     }
+    void addToBook(list<Order*>*orderList, Order* o){
+        std::list<Order*>::iterator it;
+        for (it=orderList->begin(); it != orderList->end();it++){
+            if ((*it)->price > o->price){
+                break;
+            }
+        }
+        //Add to the head 
+        if (it==orderList->begin()){
+            orderList->push_front(o);
+        }else if (it == orderList->end()) {//add to the end
+            orderList->push_back(o);
+        }else{// add before it
+            orderList->insert(it,o);
+        }
+    }
+    char match(Order *o){
+        
+
+    }
+
     Order * process(string orderId, char action, char orderType, float price, int qty){
         Order *o=NULL;
+        
         if (freeOrders.empty()){
             o=new Order();
         }else{
@@ -104,13 +126,13 @@ class Book{
         }
         o->create(orderId, action,orderType,price,qty);
         list<Order*> *orderList;
-       
+        
         if (o->action == ACTION_BUY){
             orderList = &buyOrders;
         }else{
             orderList = &sellOrders;                
         }
-        orderList->push_back(o);
+        addToBook(orderList,o);
         allOrders.insert(std::pair<string,Order *>(o->orderId,o));
 
         o->print();
@@ -242,6 +264,7 @@ int main() {
                 break;
             case ACTION_PRINT:
                 book.print();
+                break;
             default:
                 cout<<"Unknown choice"<<endl;
                 break;
