@@ -64,11 +64,15 @@ class Order{
     void print(){     
         cout<<"OrderID:"<<orderId<<" Action:"<<action<<" Type:"<<orderType<<" Price:"<<price<<" Qty:"<<qty<<" Time:"<<orderTime<<endl;
     }
-    bool match(Order &o){
+    void printShort(){
+        cout<<" Price:"<<price<<" Qty:"<<qty<<endl;       
+    }
+
+    bool match(Order *o){
          if (action == ACTION_BUY){
-             return (price>=o.price)?true:false;
+             return (price==o->price)?true:false;
          }else{
-             return (price<=o.price)?true:false;
+             return (price==o->price)?true:false;
          }
     }
     
@@ -84,14 +88,34 @@ class Book{
     Book(){
         seq=1;
     }
-    void print(){
-        cout<<"Printing Book - Sell Orders"<<endl;
-        for (auto it = sellOrders.begin(); it != sellOrders.end();it++){
-            (*it)->print();
+    void printTrade(const Order &o, const Order* bo){
+        cout<<"TRADE "<<o.orderId<<" "<<o.price<<" "<<o.qty<<" "<<bo->orderId<<" "<<
+            bo->price<<" "<<bo->qty<<endl;
+    }
+    void printBook(char action){
+        list<Order*> *orderList;
+        if (action == ACTION_BUY){
+            cout<<"BUY:"<<endl;
+            orderList = &buyOrders;
+        }else{
+            cout<<"SELL:"<<endl;   
+            orderList = &sellOrders;  
         }
-        cout<<"Printing Book - Buy Orders"<<endl;
-        for (auto it = buyOrders.begin(); it != buyOrders.end();it++){
-            (*it)->print();
+        float prevPrice=0.0;
+        int totQty=0;
+        for (auto it=orderList->rbegin(); it!=orderList->rend();it++){
+            if (prevPrice==(*it)->price){
+                totQty +=(*it)->qty;
+            }else{
+                if (totQty>0){
+                    cout<<prevPrice<<" "<<totQty<<endl;
+                }
+                totQty = (*it)->qty;
+            }
+            prevPrice = (*it)->price;
+        }
+        if (totQty>0){
+            cout<<prevPrice<<" "<<totQty<<endl;
         }
     }
     void addToBook(list<Order*>*orderList, Order* o){
@@ -109,10 +133,56 @@ class Book{
         }else{// add before it
             orderList->insert(it,o);
         }
+        allOrders.insert(std::pair<string,Order *>(o->orderId,o));
     }
-    char match(Order *o){
-        
 
+    char match(Order &o){
+        list<Order*>*orderList;
+        if (o.action == ACTION_BUY){
+            orderList = &sellOrders;
+        }else{
+            orderList = &buyOrders;
+        }
+        //scan to see enough qty to fill
+        std::list<Order*>::iterator itl;
+        int leaveQty=o.qty;
+        Order *bo;
+        for (itl=orderList->begin();itl!=orderList->end() && leaveQty>0;itl++){
+            bo = (*itl);
+            if (o.match(bo)){
+                if ((*itl)->qty > leaveQty){
+                    leaveQty=0;
+                }else{
+                    leaveQty -= (*itl)->qty;
+                }
+            }
+        }
+        if (leaveQty > 0){
+            cout<<"Not enough shares to fill "<<o.qty<<" unfilled :"<<leaveQty<<endl;
+            return (o.orderType==ORDERTYPE_GFD?MATCH_UNFILLED:MATCH_CXLD);
+        }else{//fill and print
+            leaveQty=o.qty;
+            list<Order*>::iterator lastStop=orderList->begin();
+
+            for (itl=orderList->begin();itl!=orderList->end() && leaveQty>0;itl++){
+                if (o.match((*itl))){
+                    if ((*itl)->qty > leaveQty){     
+                        (*itl)->qty -= leaveQty;
+                        cout<<"TRADE : Price "<<(*itl)->price<<" Leave Qty"<<leaveQty<<" Filled: "<<leaveQty<<endl;
+                        leaveQty=0;
+                        break;
+                    }else{
+                        leaveQty -= (*itl)->qty;
+                        cout<<"TRADE : Price "<<(*itl)->price<<" Leave Qty"<<leaveQty<<" Filled: "<<(*itl)->qty<<endl;
+                        (*itl)->clean();
+                        freeOrders.push_back(*itl);
+                        orderList->erase(itl);
+                    }
+                }
+            }
+        
+        }
+        return MATCH_FILLED;
     }
 
     Order * process(string orderId, char action, char orderType, float price, int qty){
@@ -132,45 +202,53 @@ class Book{
         }else{
             orderList = &sellOrders;                
         }
-        addToBook(orderList,o);
-        allOrders.insert(std::pair<string,Order *>(o->orderId,o));
-
         o->print();
+        char ret = match(*o);
+        if (ret == MATCH_UNFILLED){
+            addToBook(orderList,o);
+        }else if (ret == MATCH_CXLD){
+            cout<<"IOC order could not be filled. Cancelled"<<endl;
+        }else{
+            cout<<"Order successfully filled"<<endl;
+        }
         return o;
     }
-    void cancel(string orderId){
+    bool cancel(string orderId){
 
         std::map<string,Order*>::iterator it;
         std::list<Order*>::iterator itl;
 
         it = allOrders.find(orderId);
 
-        if (it != allOrders.end()){
-            Order *o = allOrders[orderId];
-            list<Order *>  *orderList;
-            if (o->action == ACTION_BUY){
-                orderList = &buyOrders;
-            }else{
-                orderList = &sellOrders;                
-            }
-            for (itl=orderList->begin();itl != orderList->end();itl++){
-                if  ((*itl)->orderId == o->orderId){
-                    orderList->erase(itl);
-                    break;
-                }
-            }
-            allOrders.erase(it);
-            cout<<"Cancelled Order :";
-            o->print();
-            o->clean();
-            freeOrders.push_back(o);
+        if (it == allOrders.end()){
+            cout<<"ERROR "<<orderId<<" Not found. Ignored."<<endl;
+            return false;
         }
+        Order *o = allOrders[orderId];
+        list<Order *>  *orderList;
+        if (o->action == ACTION_BUY){
+            orderList = &buyOrders;
+        }else{
+            orderList = &sellOrders;                
+        }
+        for (itl=orderList->begin();itl != orderList->end();itl++){
+            if  ((*itl)->orderId == o->orderId){
+                orderList->erase(itl);
+                break;
+            }
+        }
+        allOrders.erase(it);
+        cout<<"Cancelled Order :";
+        o->print();
+        o->clean();
+        freeOrders.push_back(o);
+        return true;
     }
     void replace(string orderId,char action, char orderType,float price, int qty){
-        cancel(orderId);
-        Order *o=process(orderId,action,orderType,price,qty);
-        cout<<"Replaced order :";
-        o->print();
+        if (cancel(orderId)){
+            cout<<"Replaced order :"<<orderId<<endl;
+            Order *o=process(orderId,action,orderType,price,qty);
+        }
     }
 };
 int main() {
@@ -181,17 +259,19 @@ int main() {
     vector<string> tokens;
     string tmp;
     string orderRec;
-    char action, replaceAction, orderType;
+    char action, replaceAction, orderType, mAction;
     float price=0.0;
     int qty=0,i=0;
     string orderId;
     while (!done){
+        cout<<"--------------------------------------------------"<<endl;
         cout<<"Enter order as follows"<<endl;
-        cout<<"e.g BUY/SELL IOC/GFD price quantity orderID"<<endl;
-        cout<<"e.g CANCEL orderID"<<endl;
-        cout<<"e.g MODIFY orderID BUY/SELL IOC/GFD price quantity"<<endl;
-        cout<<"e.g PRINT"<<endl;
+        cout<<"BUY/SELL IOC/GFD price quantity orderID"<<endl;
+        cout<<"MODIFY orderID BUY/SELL IOC/GFD price quantity"<<endl;
+        cout<<"CANCEL orderID"<<endl;
+        cout<<"PRINT"<<endl;
         cout<<"EXIT"<<endl;
+        cout<<"--------------------------------------------------"<<endl;
         cout<<"Enter Order :";
         cin.getline(order,MAX_ORDER_LEN);
         orderRec=(const char*)order;
@@ -221,10 +301,19 @@ int main() {
         }
         if (action==ACTION_MODIFY){
             if (tokens.size() < 5){
-                cout<<"Insufficient data for MODIFY order"<<endl;
+                cout<<"Insufficient data to MODIFY order"<<endl;
                 continue;
             }
-            i=1;
+            if (tokens[1] == "BUY")
+            {
+                mAction=ACTION_BUY;
+            }else if (tokens[1] == "SELL"){
+                mAction=ACTION_SELL;
+            }else{
+                cout<<"Unknwon Action in MODIFY!. Please reenter"<<endl;
+                continue;
+            }
+            i=2;
         }
         if (action==ACTION_MODIFY || action == ACTION_CANCEL){
             orderId=tokens[0];
@@ -232,7 +321,7 @@ int main() {
 
         if (action==ACTION_BUY || action==ACTION_SELL ){
             if (tokens.size() < 4){
-                cout<<"Insufficient Data for BUY/SELL order"<<endl;
+                cout<<"Insufficient Data to BUY/SELL order"<<endl;
                 continue;
             }
             orderId=tokens[3];
@@ -250,20 +339,20 @@ int main() {
             price=atof(tokens[i+1].c_str());
             qty = atoi(tokens[i+2].c_str());
         }
-   
         switch(action){
             case ACTION_BUY:
             case ACTION_SELL:
                 book.process(orderId,action,orderType,price,qty);
                 break;
             case ACTION_MODIFY:
-                book.replace(orderId,action,orderType,price,qty);
+                book.replace(orderId,mAction,orderType,price,qty);
                 break;
             case ACTION_CANCEL:
                 book.cancel(orderId);
                 break;
             case ACTION_PRINT:
-                book.print();
+                book.printBook(ACTION_SELL);
+                book.printBook(ACTION_BUY);
                 break;
             default:
                 cout<<"Unknown choice"<<endl;
@@ -273,83 +362,3 @@ int main() {
     
     return 0;
 }
-/**
-    bool match(Order o){
-        book = null;
-        if o.action == BUY
-            head = sellOrders->head
-        else
-            head = buyOrders->head
-
-        //check if we can fill
-        filledQty=0, leaveQty=o.qty
-
-        while priceMatch(head,o) && filledQty <= o.qty && (!head)
-        {
-            if (o.qty > head.qty)
-                leaveQty -= filledQty
-                filledQty += head.qty
-                toDelete.append(head)
-                head = head->next
-            else
-                filledQty += head.qty
-                leaveQty -= filledQty
-        }
-        if leaveQty == 0
-            for i in toDelete
-                toDelete[i].clean()
-                freedOrder.push(toDelete[i])
-            o.clean()
-            freedOrder.push(o)
-            print("Trade")
-            return FILLED
-        else if o.orderType == IOC
-            print("Cancelled")
-            o.clean()
-            freedOrder.push(o)
-            return CANCELLED
-        else 
-            print("Unfilled")
-            return UNFILLED
-    }
-
-    addToOrderBook(Order o){
-        if o.action == BUY
-            book = buyOrder->head
-        else
-            book = sellOrder->head
-
-        added=False
-        while (!added){
-            if (o.price < book.price)
-                order->next = book
-                book=>order
-                added = True
-            }else if (o.price == book.price){
-                prev=book
-                tmp=book
-                while (o.time < tmp.time && !tmp)
-                    book=book->next
-                
-                order->next = book
-                book=>order
-                added = True
-            }else{
-                
-            }
-        }
-
-    }
-    addOrder(Order o){
-        ret = match(o)
-        if ret==UNFILLED
-            //add to the Book
-        else{
-            if ret==CANCELLED
-                print("CANCELLED")
-            else
-                print("FILLED")
-        }
-    }
-}
-**/
