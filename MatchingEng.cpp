@@ -33,7 +33,7 @@ const char ORDERTYPE_GFD='G';
 
 const char MATCH_FILLED='F';
 const char MATCH_CXLD='X';
-const char MATCH_UNFILLED='U';
+const char MATCH_UNFILLED='U'; //PARTIAL or NONE 
 #define MAX_ORDER_LEN 250
 
 class Order{
@@ -70,9 +70,9 @@ class Order{
 
     bool match(Order *o){
          if (action == ACTION_BUY){
-             return (price==o->price)?true:false;
+             return (price>=o->price)?true:false;
          }else{
-             return (price==o->price)?true:false;
+             return (price<=o->price)?true:false;
          }
     }
     
@@ -88,9 +88,23 @@ class Book{
     Book(){
         seq=1;
     }
-    void printTrade(const Order &o, const Order* bo){
-        cout<<"TRADE "<<o.orderId<<" "<<o.price<<" "<<o.qty<<" "<<bo->orderId<<" "<<
-            bo->price<<" "<<bo->qty<<endl;
+    void printTrade(const Order &o, const Order* bo, int filled){
+        if (o.action==ACTION_BUY){
+            cout<<"TRADE "<<o.orderId<<" "<<o.price<<" "<<filled<<" "<<bo->orderId<<" "<<
+            bo->price<<" "<<filled<<endl;
+        }else{
+            cout<<"TRADE "<<bo->orderId<<" "<<bo->price<<" "<<filled<<" "<<o.orderId<<" "<<
+            o.price<<" "<<filled<<endl;
+        }
+    }
+    void printFullBook(){
+        cout<<"===Full Book ============="<<endl;
+        for (auto it=sellOrders.begin();it!=sellOrders.end();++it){
+            cout<<(*it)->orderId<<" "<<(*it)->price<<" "<<(*it)->qty<<endl;
+        }
+        for (auto it=buyOrders.begin();it!=buyOrders.end();++it){
+            cout<<(*it)->orderId<<" "<<(*it)->price<<" "<<(*it)->qty<<endl;
+        }
     }
     void printBook(char action){
         list<Order*> *orderList;
@@ -138,54 +152,50 @@ class Book{
 
     char match(Order &o){
         list<Order*>*orderList;
+        int leaveQty=o.qty, filled=0;
+        list<Order*>::iterator itl;
+        static list<list<Order*>::iterator>toFree;
+
         if (o.action == ACTION_BUY){
             orderList = &sellOrders;
         }else{
             orderList = &buyOrders;
         }
-        //scan to see enough qty to fill
-        std::list<Order*>::iterator itl;
-        int leaveQty=o.qty;
-        Order *bo;
-        for (itl=orderList->begin();itl!=orderList->end() && leaveQty>0;itl++){
-            bo = (*itl);
-            if (o.match(bo)){
-                if ((*itl)->qty > leaveQty){
+        for (itl=orderList->begin();itl!=orderList->end() && leaveQty>0;){
+            if (o.match((*itl))){
+                if ((*itl)->qty > leaveQty){  
+                    filled=leaveQty;  
+                    (*itl)->qty -= filled;
                     leaveQty=0;
+                    printTrade(o,(*itl),filled);
+                    break;
                 }else{
-                    leaveQty -= (*itl)->qty;
+                    filled=(*itl)->qty;
+                    leaveQty -=filled;
+                    printTrade(o,(*itl),filled);
+                    (*itl)->qty=0;
+                    freeOrders.push_back(*itl);
+                    (*itl)->clean();
+                    itl=orderList->erase(itl);
                 }
+            }else{
+                itl++;
             }
         }
-        if (leaveQty > 0){
-            cout<<"Not enough shares to fill "<<o.qty<<" unfilled :"<<leaveQty<<endl;
-            return (o.orderType==ORDERTYPE_GFD?MATCH_UNFILLED:MATCH_CXLD);
-        }else{//fill and print
-            leaveQty=o.qty;
-            list<Order*>::iterator lastStop=orderList->begin();
 
-            for (itl=orderList->begin();itl!=orderList->end() && leaveQty>0;itl++){
-                if (o.match((*itl))){
-                    if ((*itl)->qty > leaveQty){     
-                        (*itl)->qty -= leaveQty;
-                        cout<<"TRADE : Price "<<(*itl)->price<<" Leave Qty"<<leaveQty<<" Filled: "<<leaveQty<<endl;
-                        leaveQty=0;
-                        break;
-                    }else{
-                        leaveQty -= (*itl)->qty;
-                        cout<<"TRADE : Price "<<(*itl)->price<<" Leave Qty"<<leaveQty<<" Filled: "<<(*itl)->qty<<endl;
-                        (*itl)->clean();
-                        freeOrders.push_back(*itl);
-                        orderList->erase(itl);
-                    }
-                }
+        o.qty = leaveQty;        
+        if (o.orderType == ORDERTYPE_IOC){
+            return (leaveQty==0?MATCH_FILLED:MATCH_CXLD);
+        }else{
+            if (leaveQty>0){
+                return MATCH_UNFILLED;
+            }else{
+                return MATCH_FILLED;
             }
-        
         }
-        return MATCH_FILLED;
     }
 
-    Order * process(string orderId, char action, char orderType, float price, int qty){
+    void process(string orderId, char action, char orderType, float price, int qty){
         Order *o=NULL;
         
         if (freeOrders.empty()){
@@ -202,16 +212,18 @@ class Book{
         }else{
             orderList = &sellOrders;                
         }
-        o->print();
         char ret = match(*o);
         if (ret == MATCH_UNFILLED){
             addToBook(orderList,o);
         }else if (ret == MATCH_CXLD){
-            cout<<"IOC order could not be filled. Cancelled"<<endl;
+            o->clean();
+            freeOrders.push_back(o);
+            cout<<"IOC order could not be fully filled. Cancelled"<<endl;
         }else{
-            cout<<"Order successfully filled"<<endl;
+            cout<<"Order fully filled"<<endl;
+            o->clean();
+            freeOrders.push_back(o);
         }
-        return o;
     }
     bool cancel(string orderId){
 
@@ -247,7 +259,7 @@ class Book{
     void replace(string orderId,char action, char orderType,float price, int qty){
         if (cancel(orderId)){
             cout<<"Replaced order :"<<orderId<<endl;
-            Order *o=process(orderId,action,orderType,price,qty);
+            process(orderId,action,orderType,price,qty);
         }
     }
 };
@@ -338,7 +350,23 @@ int main() {
             }
             price=atof(tokens[i+1].c_str());
             qty = atoi(tokens[i+2].c_str());
+
+            if (price <= 0){
+                cout<<"ERROR Price cannot be negative"<<endl;
+                continue;
+            }
+            if (qty <=0){
+                cout<<"ERROR Quantity cannot be negative"<<endl;
+                continue;
+            }
         }
+        if (action != ACTION_PRINT){
+            if (orderId.length()==0){
+                cout<<"ERROR OrderId cannot be blank"<<endl;
+                continue;
+            }
+        }
+
         switch(action){
             case ACTION_BUY:
             case ACTION_SELL:
