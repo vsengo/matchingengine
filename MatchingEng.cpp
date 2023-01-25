@@ -72,7 +72,7 @@ class Order{
          if (action == ACTION_BUY){
              return (price>=o->price)?true:false;
          }else{
-             return (price<=o->price)?true:false;
+             return (price>=o->price)?true:false;
          }
     }
     
@@ -84,9 +84,7 @@ class Book{
     list<Order*> buyOrders;
     list<Order*>freeOrders;
     map<string, Order*> allOrders;
-    int seq;
     Book(){
-        seq=1;
     }
     void printTrade(const Order &o, const Order* bo, int filled){
         if (o.action==ACTION_BUY){
@@ -117,7 +115,7 @@ class Book{
         }
         float prevPrice=0.0;
         int totQty=0;
-        for (auto it=orderList->rbegin(); it!=orderList->rend();it++){
+        for (auto it=orderList->begin(); it!=orderList->end();it++){
             if (prevPrice==(*it)->price){
                 totQty +=(*it)->qty;
             }else{
@@ -135,7 +133,7 @@ class Book{
     void addToBook(list<Order*>*orderList, Order* o){
         std::list<Order*>::iterator it;
         for (it=orderList->begin(); it != orderList->end();it++){
-            if ((*it)->price > o->price){
+            if ((*it)->price < o->price){
                 break;
             }
         }
@@ -152,29 +150,31 @@ class Book{
 
     char match(Order &o){
         list<Order*>*orderList;
-        int leaveQty=o.qty, filled=0;
-        list<Order*>::iterator itl;
-        static list<list<Order*>::iterator>toFree;
+        int leaveQty=o.qty;
+        list<Order*>::iterator startItl, endItl;
 
         if (o.action == ACTION_BUY){
             orderList = &sellOrders;
+            startItl=orderList->begin();
+            endItl = orderList->end();
         }else{
             orderList = &buyOrders;
+            startItl=orderList->rbegin();
+            endItl = orderList->rend();
         }
         for (itl=orderList->begin();itl!=orderList->end() && leaveQty>0;){
             if (o.match((*itl))){
                 if ((*itl)->qty > leaveQty){  
-                    filled=leaveQty;  
-                    (*itl)->qty -= filled;
+                    (*itl)->qty -= leaveQty;
+                    printTrade(o,(*itl),leaveQty);
                     leaveQty=0;
-                    printTrade(o,(*itl),filled);
                     break;
                 }else{
-                    filled=(*itl)->qty;
-                    leaveQty -=filled;
-                    printTrade(o,(*itl),filled);
-                    (*itl)->qty=0;
+                    leaveQty -=(*itl)->qty;
+                    printTrade(o,(*itl),(*itl)->qty);
+                    
                     freeOrders.push_back(*itl);
+                    allOrders.erase((*itl)->orderId);
                     (*itl)->clean();
                     itl=orderList->erase(itl);
                 }
@@ -184,14 +184,10 @@ class Book{
         }
 
         o.qty = leaveQty;        
-        if (o.orderType == ORDERTYPE_IOC){
-            return (leaveQty==0?MATCH_FILLED:MATCH_CXLD);
+        if (leaveQty==0){
+            return MATCH_FILLED;
         }else{
-            if (leaveQty>0){
-                return MATCH_UNFILLED;
-            }else{
-                return MATCH_FILLED;
-            }
+            return (o.orderType==ORDERTYPE_IOC?MATCH_CXLD:MATCH_UNFILLED);
         }
     }
 
@@ -204,6 +200,9 @@ class Book{
             o=freeOrders.front();
             freeOrders.pop_front();
         }
+        if (allOrders.find(orderId) != allOrders.end()){
+            return;
+        }
         o->create(orderId, action,orderType,price,qty);
         list<Order*> *orderList;
         
@@ -215,24 +214,16 @@ class Book{
         char ret = match(*o);
         if (ret == MATCH_UNFILLED){
             addToBook(orderList,o);
-        }else if (ret == MATCH_CXLD){
-            o->clean();
-            freeOrders.push_back(o);
-            cout<<"IOC order could not be fully filled. Cancelled"<<endl;
         }else{
-            cout<<"Order fully filled"<<endl;
             o->clean();
             freeOrders.push_back(o);
         }
     }
     bool cancel(string orderId){
 
-        std::map<string,Order*>::iterator it;
         std::list<Order*>::iterator itl;
 
-        it = allOrders.find(orderId);
-
-        if (it == allOrders.end()){
+        if (allOrders.find(orderId) == allOrders.end()){
             cout<<"ERROR "<<orderId<<" Not found. Ignored."<<endl;
             return false;
         }
@@ -243,13 +234,14 @@ class Book{
         }else{
             orderList = &sellOrders;                
         }
-        for (itl=orderList->begin();itl != orderList->end();itl++){
+        for (itl=orderList->begin();itl != orderList->end();){
             if  ((*itl)->orderId == o->orderId){
-                orderList->erase(itl);
+                itl=orderList->erase(itl);
                 break;
             }
+            itl++;
         }
-        allOrders.erase(it);
+        allOrders.erase(o->orderId);
         cout<<"Cancelled Order :";
         o->print();
         o->clean();
@@ -275,18 +267,11 @@ int main() {
     float price=0.0;
     int qty=0,i=0;
     string orderId;
-    while (!done){
-        cout<<"--------------------------------------------------"<<endl;
-        cout<<"Enter order as follows"<<endl;
-        cout<<"BUY/SELL IOC/GFD price quantity orderID"<<endl;
-        cout<<"MODIFY orderID BUY/SELL IOC/GFD price quantity"<<endl;
-        cout<<"CANCEL orderID"<<endl;
-        cout<<"PRINT"<<endl;
-        cout<<"EXIT"<<endl;
-        cout<<"--------------------------------------------------"<<endl;
-        cout<<"Enter Order :";
-        cin.getline(order,MAX_ORDER_LEN);
-        orderRec=(const char*)order;
+    while (!cin.eof()){
+        getline(cin,orderRec);
+        if (cin.fail()){
+            exit(1);
+        }
         stringstream st(orderRec);
         getline(st,tmp,' ');
         
